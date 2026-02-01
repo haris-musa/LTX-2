@@ -148,7 +148,7 @@ class AudioConditionedI2VPipeline:
         waveform = waveform.to(device=self.device, dtype=torch.float32)
         mel = audio_processor.waveform_to_mel(waveform, waveform_sample_rate=sample_rate)
 
-        with torch.inference_mode():
+        with torch.no_grad():
             latents = audio_encoder(mel)
 
         return latents.to(self.dtype)
@@ -203,7 +203,7 @@ class AudioConditionedI2VPipeline:
 
         return state, audio_tools
 
-    @torch.inference_mode()
+    @torch.no_grad()
     def __call__(
         self,
         prompt: str,
