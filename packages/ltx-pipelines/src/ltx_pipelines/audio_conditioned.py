@@ -399,11 +399,15 @@ class AudioConditionedI2VPipeline:
         del transformer, video_encoder
         cleanup_memory()
 
+        # Clone latents to escape inference mode (required for VAE decoder compatibility)
+        video_latent = video_state.latent.clone()
+        audio_latent = audio_state.latent.clone()
+
         decoded_video = vae_decode_video(
-            video_state.latent, self.stage_2_model_ledger.video_decoder(), tiling_config, generator
+            video_latent, self.stage_2_model_ledger.video_decoder(), tiling_config, generator
         )
         decoded_audio = vae_decode_audio(
-            audio_state.latent, self.stage_2_model_ledger.audio_decoder(), self.stage_2_model_ledger.vocoder()
+            audio_latent, self.stage_2_model_ledger.audio_decoder(), self.stage_2_model_ledger.vocoder()
         )
 
         return decoded_video, decoded_audio
