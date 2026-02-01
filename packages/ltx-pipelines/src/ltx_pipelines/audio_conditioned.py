@@ -234,6 +234,7 @@ class AudioConditionedI2VPipeline:
         audio_state = audio_tools.clear_conditioning(audio_state)
         audio_state = audio_tools.unpatchify(audio_state)
 
+        torch.cuda.synchronize()
         del transformer
         cleanup_memory()
 
@@ -244,6 +245,7 @@ class AudioConditionedI2VPipeline:
                 upsampler=self.stage_2_model_ledger.spatial_upsampler(),
             )
             stage_1_audio_latent = audio_state.latent
+            torch.cuda.synchronize()
             del video_state, audio_state
             cleanup_memory()
 
@@ -298,12 +300,14 @@ class AudioConditionedI2VPipeline:
             audio_state = audio_tools.clear_conditioning(audio_state)
             audio_state = audio_tools.unpatchify(audio_state)
 
+            torch.cuda.synchronize()
             del transformer
             cleanup_memory()
 
         video_latent = video_state.latent.clone()
         audio_latent_out = audio_state.latent.clone()
 
+        torch.cuda.synchronize()
         del video_encoder, video_state, audio_state
         cleanup_memory()
 
