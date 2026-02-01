@@ -395,13 +395,21 @@ class AudioConditionedI2VPipeline:
         audio_state = audio_tools.clear_conditioning(audio_state)
         audio_state = audio_tools.unpatchify(audio_state)
 
-        torch.cuda.synchronize()
-        del transformer, video_encoder
-        cleanup_memory()
-
         # Clone latents to escape inference mode (required for VAE decoder compatibility)
         video_latent = video_state.latent.clone()
         audio_latent = audio_state.latent.clone()
+
+        # memory cleanup before VAE decoding
+        torch.cuda.synchronize()
+        del transformer, video_encoder, video_state, audio_state
+        del video_tools, audio_tools, noiser, stepper
+        del v_context_p, v_context_n, a_context_p, a_context_n
+        del stage_1_conditionings, stage_2_conditionings
+        del upscaled_video_latent, sigmas, distilled_sigmas
+        cleanup_memory()
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
 
         decoded_video = vae_decode_video(
             video_latent, self.stage_2_model_ledger.video_decoder(), tiling_config, generator
