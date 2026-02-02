@@ -64,15 +64,7 @@ class AudioConditionedI2VPipeline:
 
         self.stage_2_model_ledger = None
         if distilled_lora:
-            self.stage_2_model_ledger = ModelLedger(
-                dtype=self.dtype,
-                device=device,
-                checkpoint_path=checkpoint_path,
-                gemma_root_path=gemma_root,
-                spatial_upsampler_path=spatial_upsampler_path,
-                loras=[*(loras or []), *distilled_lora],
-                fp8transformer=fp8transformer,
-            )
+            self.stage_2_model_ledger = self.model_ledger.with_loras(loras=distilled_lora)
 
         self.pipeline_components = PipelineComponents(dtype=self.dtype, device=device)
         self._audio_encoder = None
@@ -243,7 +235,7 @@ class AudioConditionedI2VPipeline:
         audio_state = audio_tools.unpatchify(audio_state)
 
         torch.cuda.synchronize()
-        del transformer
+        del stage_1_loop, transformer
         cleanup_memory()
 
         if use_upscaler:
@@ -309,7 +301,7 @@ class AudioConditionedI2VPipeline:
             audio_state = audio_tools.unpatchify(audio_state)
 
             torch.cuda.synchronize()
-            del transformer
+            del stage_2_loop, transformer
             cleanup_memory()
 
         video_latent = video_state.latent.clone()
