@@ -170,11 +170,15 @@ class AudioConditionedI2VPipeline:
         stepper = EulerDiffusionStep()
 
         audio_latent = self.encode_audio(audio_waveform, audio_sample_rate, duration_s)
+        self._audio_encoder = None
+        self._audio_processor = None
+        cleanup_memory()
 
         text_encoder = self.model_ledger.text_encoder()
         context_p, context_n = encode_text(text_encoder, prompts=[prompt, negative_prompt])
         v_context_p, a_context_p = context_p
         v_context_n, a_context_n = context_n
+        text_encoder = text_encoder.to("cpu")
         del text_encoder
         cleanup_memory()
 
