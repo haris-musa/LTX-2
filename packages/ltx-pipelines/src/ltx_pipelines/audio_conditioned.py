@@ -200,6 +200,10 @@ class AudioConditionedI2VPipeline:
             device=self.device,
         )
 
+        if not use_upscaler:
+            video_encoder = video_encoder.to("cpu")
+            cleanup_memory()
+
         video_state, video_tools = noise_video_state(
             output_shape=stage_1_shape,
             noiser=noiser,
@@ -243,11 +247,15 @@ class AudioConditionedI2VPipeline:
         cleanup_memory()
 
         if use_upscaler:
+            upsampler = self.stage_2_model_ledger.spatial_upsampler()
             upscaled_video = upsample_video(
                 latent=video_state.latent[:1],
                 video_encoder=video_encoder,
-                upsampler=self.stage_2_model_ledger.spatial_upsampler(),
+                upsampler=upsampler,
             )
+            upsampler = upsampler.to("cpu")
+            del upsampler
+            cleanup_memory()
             stage_1_audio_latent = audio_state.latent
             torch.cuda.synchronize()
             del video_state, audio_state
@@ -265,6 +273,8 @@ class AudioConditionedI2VPipeline:
                 dtype=self.dtype,
                 device=self.device,
             )
+            video_encoder = video_encoder.to("cpu")
+            cleanup_memory()
 
             video_state, video_tools = noise_video_state(
                 output_shape=stage_2_shape,
