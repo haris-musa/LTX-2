@@ -243,6 +243,7 @@ class AudioConditionedI2VPipeline:
         audio_state = audio_tools.unpatchify(audio_state)
 
         torch.cuda.synchronize()
+        transformer = transformer.to("cpu")
         del stage_1_loop, transformer
         cleanup_memory()
 
@@ -315,6 +316,7 @@ class AudioConditionedI2VPipeline:
             audio_state = audio_tools.unpatchify(audio_state)
 
             torch.cuda.synchronize()
+            transformer = transformer.to("cpu")
             del stage_2_loop, transformer
             cleanup_memory()
             del upscaled_video, stage_1_audio_latent, stage_2_conds
@@ -328,7 +330,19 @@ class AudioConditionedI2VPipeline:
         cleanup_memory()
 
         ledger = self.stage_2_model_ledger if use_upscaler else self.model_ledger
-        decoded_video = vae_decode_video(video_latent, ledger.video_decoder(), tiling_config, generator)
-        decoded_audio = vae_decode_audio(audio_latent_out, ledger.audio_decoder(), ledger.vocoder())
+
+        video_decoder = ledger.video_decoder()
+        decoded_video = vae_decode_video(video_latent, video_decoder, tiling_config, generator)
+        video_decoder = video_decoder.to("cpu")
+        del video_decoder, video_latent
+        cleanup_memory()
+
+        audio_decoder = ledger.audio_decoder()
+        vocoder = ledger.vocoder()
+        decoded_audio = vae_decode_audio(audio_latent_out, audio_decoder, vocoder)
+        audio_decoder = audio_decoder.to("cpu")
+        vocoder = vocoder.to("cpu")
+        del audio_decoder, vocoder, audio_latent_out
+        cleanup_memory()
 
         return decoded_video, decoded_audio
