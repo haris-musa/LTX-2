@@ -181,8 +181,10 @@ class AudioConditionedI2VPipeline:
         del text_encoder
         cleanup_memory()
 
+        print(f"DEBUG: VRAM before transformer build: {torch.cuda.memory_allocated()/1e9:.2f}GB")
         video_encoder = self.model_ledger.video_encoder()
         transformer = self.model_ledger.transformer()
+        print(f"DEBUG: VRAM after transformer build: {torch.cuda.memory_allocated()/1e9:.2f}GB")
         sigmas = LTX2Scheduler().execute(steps=num_inference_steps).to(dtype=torch.float32, device=self.device)
 
         if use_upscaler:
@@ -235,13 +237,18 @@ class AudioConditionedI2VPipeline:
 
         video_state, audio_state = stage_1_loop(sigmas, video_state, audio_state, stepper)
 
+        # CRITICAL: Break the closure and delete the transformer
+        del stage_1_loop
+        del transformer
+        cleanup_memory()
+        print(f"DEBUG: VRAM after transformer purge: {torch.cuda.memory_allocated()/1e9:.2f}GB")
+
         video_state = video_tools.clear_conditioning(video_state)
         video_state = video_tools.unpatchify(video_state)
         audio_state = audio_tools.clear_conditioning(audio_state)
         audio_state = audio_tools.unpatchify(audio_state)
 
         torch.cuda.synchronize()
-        del transformer
         cleanup_memory()
 
         if use_upscaler:
@@ -319,13 +326,18 @@ class AudioConditionedI2VPipeline:
         video_latent = video_state.latent
         audio_latent_out = audio_state.latent
 
+        # Final preparation for decoding
         torch.cuda.synchronize()
-        del video_encoder, video_state, audio_state
+        if 'video_encoder' in locals():
+            del video_encoder
+        del video_state, audio_state, v_context_p, a_context_p, v_context_n, a_context_n
         cleanup_memory()
+        print(f"DEBUG: VRAM before decoder build: {torch.cuda.memory_allocated()/1e9:.2f}GB")
 
         ledger = self.stage_2_model_ledger if use_upscaler else self.model_ledger
 
         video_decoder = ledger.video_decoder()
+        print(f"DEBUG: VRAM after decoder build: {torch.cuda.memory_allocated()/1e9:.2f}GB")
         decoded_video = vae_decode_video(video_latent, video_decoder, tiling_config, generator)
 
         audio_decoder = ledger.audio_decoder()
