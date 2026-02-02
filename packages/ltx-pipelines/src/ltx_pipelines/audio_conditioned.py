@@ -62,7 +62,7 @@ class AudioConditionedI2VPipeline:
             fp8transformer=fp8transformer,
         )
 
-        self.stage_2_model_ledger = None
+        self.stage_2_model_ledger = self.model_ledger
         if distilled_lora:
             self.stage_2_model_ledger = self.model_ledger.with_loras(loras=distilled_lora)
 
@@ -319,12 +319,19 @@ class AudioConditionedI2VPipeline:
             audio_state = audio_tools.clear_conditioning(audio_state)
             audio_state = audio_tools.unpatchify(audio_state)
 
+            video_latent_tmp = video_state.latent
+            audio_latent_tmp = audio_state.latent
             torch.cuda.synchronize()
             del video_state, audio_state, stage_2_loop, transformer, stage_2_conds, upscaled_video, stage_1_audio_latent
             cleanup_memory()
+            video_latent = video_latent_tmp
+            audio_latent_out = audio_latent_tmp
 
-        video_latent = video_state.latent
-        audio_latent_out = audio_state.latent
+        if not use_upscaler:
+            video_latent = video_state.latent
+            audio_latent_out = audio_state.latent
+
+        print(f"DEBUG: Final Latent Shapes - Video: {video_latent.shape}, Audio: {audio_latent_out.shape}")
 
         # Final preparation for decoding
         torch.cuda.synchronize()
@@ -338,7 +345,9 @@ class AudioConditionedI2VPipeline:
 
         video_decoder = ledger.video_decoder()
         print(f"DEBUG: VRAM after decoder build: {torch.cuda.memory_allocated()/1e9:.2f}GB")
-        decoded_video = vae_decode_video(video_latent, video_decoder, tiling_config, generator)
+        # Realize iterator immediately to prevent it from outliving local references
+        decoded_chunks = list(vae_decode_video(video_latent, video_decoder, tiling_config, generator))
+        decoded_video = torch.cat(decoded_chunks, dim=0) if len(decoded_chunks) > 1 else decoded_chunks[0]
 
         audio_decoder = ledger.audio_decoder()
         vocoder = ledger.vocoder()
