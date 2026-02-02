@@ -328,10 +328,11 @@ class AudioConditionedI2VPipeline:
             audio_latent_out = audio_latent_tmp
 
         if not use_upscaler:
-            video_latent = video_state.latent
-            audio_latent_out = audio_state.latent
+            video_latent = video_state.latent.clone()
+            audio_latent_out = audio_state.latent.clone()
 
         print(f"DEBUG: Final Latent Shapes - Video: {video_latent.shape}, Audio: {audio_latent_out.shape}")
+        print(f"DEBUG: Audio Latent Stats - Max: {audio_latent_out.max().item():.4f}, Min: {audio_latent_out.min().item():.4f}, Mean: {audio_latent_out.mean().item():.4f}")
 
         # Final preparation for decoding
         torch.cuda.synchronize()
@@ -347,6 +348,7 @@ class AudioConditionedI2VPipeline:
 
         video_decoder = ledger.video_decoder()
         print(f"DEBUG: VRAM after decoder build: {torch.cuda.memory_allocated()/1e9:.2f}GB")
+        
         # Realize iterator immediately to prevent it from outliving local references
         decoded_chunks = list(vae_decode_video(video_latent, video_decoder, tiling_config, generator))
         decoded_video = torch.cat(decoded_chunks, dim=0) if len(decoded_chunks) > 1 else decoded_chunks[0]
@@ -354,5 +356,6 @@ class AudioConditionedI2VPipeline:
         audio_decoder = ledger.audio_decoder()
         vocoder = ledger.vocoder()
         decoded_audio = vae_decode_audio(audio_latent_out, audio_decoder, vocoder)
+        print(f"DEBUG: Decoded Audio Stats - Max: {decoded_audio.max().item():.4f}, Min: {decoded_audio.min().item():.4f}")
 
         return decoded_video, decoded_audio
