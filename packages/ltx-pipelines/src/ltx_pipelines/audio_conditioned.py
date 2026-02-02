@@ -178,7 +178,6 @@ class AudioConditionedI2VPipeline:
         context_p, context_n = encode_text(text_encoder, prompts=[prompt, negative_prompt])
         v_context_p, a_context_p = context_p
         v_context_n, a_context_n = context_n
-        text_encoder = text_encoder.to("cpu")
         del text_encoder
         cleanup_memory()
 
@@ -201,7 +200,7 @@ class AudioConditionedI2VPipeline:
         )
 
         if not use_upscaler:
-            video_encoder = video_encoder.to("cpu")
+            del video_encoder
             cleanup_memory()
 
         video_state, video_tools = noise_video_state(
@@ -243,8 +242,7 @@ class AudioConditionedI2VPipeline:
         audio_state = audio_tools.unpatchify(audio_state)
 
         torch.cuda.synchronize()
-        transformer = transformer.to("cpu")
-        del stage_1_loop, transformer
+        del transformer
         cleanup_memory()
 
         if use_upscaler:
@@ -259,7 +257,7 @@ class AudioConditionedI2VPipeline:
             cleanup_memory()
             stage_1_audio_latent = audio_state.latent
             torch.cuda.synchronize()
-            del video_state, audio_state
+            del video_state, audio_state, upscaled_video, stage_1_audio_latent, stage_2_conds
             cleanup_memory()
 
             transformer = self.stage_2_model_ledger.transformer()
@@ -316,10 +314,7 @@ class AudioConditionedI2VPipeline:
             audio_state = audio_tools.unpatchify(audio_state)
 
             torch.cuda.synchronize()
-            transformer = transformer.to("cpu")
-            del stage_2_loop, transformer
-            cleanup_memory()
-            del upscaled_video, stage_1_audio_latent, stage_2_conds
+            del video_state, audio_state, stage_2_loop, transformer, stage_2_conds
             cleanup_memory()
 
         video_latent = video_state.latent
