@@ -200,7 +200,6 @@ class AudioConditionedI2VPipeline:
         )
 
         if not use_upscaler:
-            del video_encoder
             cleanup_memory()
 
         video_state, video_tools = noise_video_state(
