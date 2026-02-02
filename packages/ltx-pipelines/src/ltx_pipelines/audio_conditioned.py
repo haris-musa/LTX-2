@@ -337,7 +337,9 @@ class AudioConditionedI2VPipeline:
         torch.cuda.synchronize()
         if 'video_encoder' in locals():
             del video_encoder
-        del video_state, audio_state, v_context_p, a_context_p, v_context_n, a_context_n
+        if 'video_state' in locals(): del video_state
+        if 'audio_state' in locals(): del audio_state
+        del v_context_p, a_context_p, v_context_n, a_context_n
         cleanup_memory()
         print(f"DEBUG: VRAM before decoder build: {torch.cuda.memory_allocated()/1e9:.2f}GB")
 
