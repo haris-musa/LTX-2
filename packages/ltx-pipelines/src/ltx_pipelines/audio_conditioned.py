@@ -64,7 +64,15 @@ class AudioConditionedI2VPipeline:
 
         self.stage_2_model_ledger = None
         if distilled_lora:
-            self.stage_2_model_ledger = self.model_ledger.with_loras(loras=distilled_lora)
+            self.stage_2_model_ledger = ModelLedger(
+                dtype=self.dtype,
+                device=device,
+                checkpoint_path=checkpoint_path,
+                gemma_root_path=gemma_root,
+                spatial_upsampler_path=spatial_upsampler_path,
+                loras=[*(loras or []), *distilled_lora],
+                fp8transformer=fp8transformer,
+            )
 
         self.pipeline_components = PipelineComponents(dtype=self.dtype, device=device)
         self._audio_encoder = None
