@@ -62,8 +62,8 @@ class AudioConditionedI2VPipeline:
             fp8transformer=fp8transformer,
         )
 
-        self.stage_2_model_ledger = self.model_ledger
-        if distilled_lora:
+        self.stage_2_model_ledger = None
+        if distilled_lora and spatial_upsampler_path:
             self.stage_2_model_ledger = self.model_ledger.with_loras(loras=distilled_lora)
 
         self.pipeline_components = PipelineComponents(dtype=self.dtype, device=device)
@@ -159,7 +159,7 @@ class AudioConditionedI2VPipeline:
         tiling_config: TilingConfig | None = None,
         use_upscaler: bool = False,
     ) -> tuple[Iterator[torch.Tensor], torch.Tensor]:
-        if use_upscaler and not self.stage_2_model_ledger:
+        if use_upscaler and self.stage_2_model_ledger is None:
             raise ValueError("use_upscaler=True requires distilled_lora and spatial_upsampler_path")
 
         assert_resolution(height=height, width=width, is_two_stage=use_upscaler)
