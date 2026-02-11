@@ -18,6 +18,7 @@ from ltx_core.model.audio_vae.ops import AudioProcessor
 from ltx_core.model.upsampler import upsample_video
 from ltx_core.model.video_vae import TilingConfig
 from ltx_core.model.video_vae import decode_video as vae_decode_video
+from ltx_core.quantization import QuantizationPolicy
 from ltx_core.text_encoders.gemma import encode_text
 from ltx_core.tools import AudioLatentTools
 from ltx_core.types import AudioLatentShape, LatentState, VideoPixelShape
@@ -54,6 +55,7 @@ class AudioConditionedI2VPipeline:
         self.dtype = torch.bfloat16
         self.checkpoint_path = checkpoint_path
         self.spatial_upsampler_path = spatial_upsampler_path
+        quantization = QuantizationPolicy.fp8_cast() if fp8transformer else None
 
         self.model_ledger = ModelLedger(
             dtype=self.dtype,
@@ -62,7 +64,7 @@ class AudioConditionedI2VPipeline:
             gemma_root_path=gemma_root,
             spatial_upsampler_path=spatial_upsampler_path,
             loras=loras or [],
-            fp8transformer=fp8transformer,
+            quantization=quantization,
         )
 
         self.stage_2_model_ledger = None
