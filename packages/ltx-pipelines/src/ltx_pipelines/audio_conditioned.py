@@ -1,8 +1,10 @@
 """Audio-conditioned video generation pipeline with optional upscaling."""
 
-import torch
+import logging
 from collections.abc import Iterator
 from dataclasses import replace
+
+import torch
 
 from ltx_core.components.diffusion_steps import EulerDiffusionStep
 from ltx_core.components.guiders import MultiModalGuider, MultiModalGuiderParams
@@ -34,6 +36,7 @@ from ltx_pipelines.utils.helpers import (
 from ltx_pipelines.utils.types import PipelineComponents
 
 device = get_device()
+logger = logging.getLogger(__name__)
 
 
 class AudioConditionedI2VPipeline:
@@ -172,7 +175,7 @@ class AudioConditionedI2VPipeline:
         audio_latent = self.encode_audio(audio_waveform, audio_sample_rate, duration_s)
         self._audio_encoder = None
         self._audio_processor = None
-        cleanup_memory()
+        cleanup_memory(empty_cache=True, synchronize=True)
 
         text_encoder = self.model_ledger.text_encoder()
         context_p, context_n = encode_text(text_encoder, prompts=[prompt, negative_prompt])
@@ -181,10 +184,10 @@ class AudioConditionedI2VPipeline:
         del text_encoder
         cleanup_memory()
 
-        print(f"DEBUG: VRAM before transformer build: {torch.cuda.memory_allocated()/1e9:.2f}GB")
+        logger.debug("VRAM before transformer build: %.2fGB", torch.cuda.memory_allocated() / 1e9)
         video_encoder = self.model_ledger.video_encoder()
         transformer = self.model_ledger.transformer()
-        print(f"DEBUG: VRAM after transformer build: {torch.cuda.memory_allocated()/1e9:.2f}GB")
+        logger.debug("VRAM after transformer build: %.2fGB", torch.cuda.memory_allocated() / 1e9)
         sigmas = LTX2Scheduler().execute(steps=num_inference_steps).to(dtype=torch.float32, device=self.device)
 
         if use_upscaler:
@@ -240,8 +243,8 @@ class AudioConditionedI2VPipeline:
         # CRITICAL: Break the closure and delete the transformer
         del stage_1_loop
         del transformer
-        cleanup_memory()
-        print(f"DEBUG: VRAM after transformer purge: {torch.cuda.memory_allocated()/1e9:.2f}GB")
+        cleanup_memory(empty_cache=True, synchronize=True)
+        logger.debug("VRAM after transformer purge: %.2fGB", torch.cuda.memory_allocated() / 1e9)
 
         video_state = video_tools.clear_conditioning(video_state)
         video_state = video_tools.unpatchify(video_state)
@@ -260,11 +263,11 @@ class AudioConditionedI2VPipeline:
             )
             upsampler = upsampler.to("cpu")
             del upsampler
-            cleanup_memory()
+            cleanup_memory(empty_cache=True, synchronize=True)
             stage_1_audio_latent = audio_state.latent
             torch.cuda.synchronize()
             del video_state, audio_state
-            cleanup_memory()
+            cleanup_memory(empty_cache=True, synchronize=True)
 
             transformer = self.stage_2_model_ledger.transformer()
             distilled_sigmas = torch.Tensor(STAGE_2_DISTILLED_SIGMA_VALUES).to(self.device)
@@ -279,7 +282,7 @@ class AudioConditionedI2VPipeline:
                 device=self.device,
             )
             video_encoder = video_encoder.to("cpu")
-            cleanup_memory()
+            cleanup_memory(empty_cache=True, synchronize=True)
 
             video_state, video_tools = noise_video_state(
                 output_shape=stage_2_shape,
@@ -323,7 +326,7 @@ class AudioConditionedI2VPipeline:
             audio_latent_tmp = audio_state.latent
             torch.cuda.synchronize()
             del video_state, audio_state, stage_2_loop, transformer, stage_2_conds, upscaled_video, stage_1_audio_latent
-            cleanup_memory()
+            cleanup_memory(empty_cache=True, synchronize=True)
             video_latent = video_latent_tmp
             audio_latent_out = audio_latent_tmp
 
@@ -331,8 +334,13 @@ class AudioConditionedI2VPipeline:
             video_latent = video_state.latent.clone()
             audio_latent_out = audio_state.latent.clone()
 
-        print(f"DEBUG: Final Latent Shapes - Video: {video_latent.shape}, Audio: {audio_latent_out.shape}")
-        print(f"DEBUG: Audio Latent Stats - Max: {audio_latent_out.max().item():.4f}, Min: {audio_latent_out.min().item():.4f}, Mean: {audio_latent_out.mean().item():.4f}")
+        logger.debug("Final Latent Shapes - Video: %s, Audio: %s", video_latent.shape, audio_latent_out.shape)
+        logger.debug(
+            "Audio Latent Stats - Max: %.4f, Min: %.4f, Mean: %.4f",
+            audio_latent_out.max().item(),
+            audio_latent_out.min().item(),
+            audio_latent_out.mean().item(),
+        )
 
         # Final preparation for decoding
         torch.cuda.synchronize()
@@ -341,13 +349,13 @@ class AudioConditionedI2VPipeline:
         if 'video_state' in locals(): del video_state
         if 'audio_state' in locals(): del audio_state
         del v_context_p, a_context_p, v_context_n, a_context_n
-        cleanup_memory()
-        print(f"DEBUG: VRAM before decoder build: {torch.cuda.memory_allocated()/1e9:.2f}GB")
+        cleanup_memory(empty_cache=True, synchronize=True)
+        logger.debug("VRAM before decoder build: %.2fGB", torch.cuda.memory_allocated() / 1e9)
 
         ledger = self.stage_2_model_ledger if use_upscaler else self.model_ledger
 
         video_decoder = ledger.video_decoder()
-        print(f"DEBUG: VRAM after decoder build: {torch.cuda.memory_allocated()/1e9:.2f}GB")
+        logger.debug("VRAM after decoder build: %.2fGB", torch.cuda.memory_allocated() / 1e9)
         
         # Realize iterator immediately to prevent it from outliving local references
         decoded_chunks = list(vae_decode_video(video_latent, video_decoder, tiling_config, generator))
@@ -356,6 +364,10 @@ class AudioConditionedI2VPipeline:
         audio_decoder = ledger.audio_decoder()
         vocoder = ledger.vocoder()
         decoded_audio = vae_decode_audio(audio_latent_out, audio_decoder, vocoder)
-        print(f"DEBUG: Decoded Audio Stats - Max: {decoded_audio.max().item():.4f}, Min: {decoded_audio.min().item():.4f}")
+        logger.debug(
+            "Decoded Audio Stats - Max: %.4f, Min: %.4f",
+            decoded_audio.max().item(),
+            decoded_audio.min().item(),
+        )
 
         return decoded_video, decoded_audio

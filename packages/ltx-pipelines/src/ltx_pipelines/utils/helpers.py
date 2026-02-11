@@ -39,10 +39,14 @@ def get_device() -> torch.device:
     return torch.device("cpu")
 
 
-def cleanup_memory() -> None:
+def cleanup_memory(*, empty_cache: bool = False, synchronize: bool = False) -> None:
+    """Collect garbage and optionally run CUDA cleanup."""
     gc.collect()
-    torch.cuda.empty_cache()
-    torch.cuda.synchronize()
+    if torch.cuda.is_available():
+        if synchronize:
+            torch.cuda.synchronize()
+        if empty_cache:
+            torch.cuda.empty_cache()
 
 
 def image_conditionings_by_replacing_latent(
