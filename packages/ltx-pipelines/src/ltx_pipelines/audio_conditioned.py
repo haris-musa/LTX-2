@@ -25,7 +25,6 @@ from ltx_pipelines.utils import ModelLedger
 from ltx_pipelines.utils.constants import STAGE_2_DISTILLED_SIGMA_VALUES
 from ltx_pipelines.utils.helpers import (
     assert_resolution,
-    cleanup_memory,
     euler_denoising_loop,
     get_device,
     image_conditionings_by_replacing_latent,
@@ -37,6 +36,11 @@ from ltx_pipelines.utils.types import PipelineComponents
 
 device = get_device()
 logger = logging.getLogger(__name__)
+
+
+def _log_vram(message: str) -> None:
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(message, torch.cuda.memory_allocated() / 1e9)
 
 
 class AudioConditionedI2VPipeline:
@@ -75,6 +79,17 @@ class AudioConditionedI2VPipeline:
         self.pipeline_components = PipelineComponents(dtype=self.dtype, device=device)
         self._audio_encoder = None
         self._audio_processor = None
+        self._text_encoder = None
+        self._video_encoder = None
+        self._stage_1_transformer = None
+        self._stage_2_transformer = None
+        self._stage_2_upsampler = None
+        self._stage_1_video_decoder = None
+        self._stage_2_video_decoder = None
+        self._stage_1_audio_decoder = None
+        self._stage_2_audio_decoder = None
+        self._stage_1_vocoder = None
+        self._stage_2_vocoder = None
 
     def _get_audio_encoder(self) -> tuple:
         if self._audio_encoder is None:
@@ -92,6 +107,68 @@ class AudioConditionedI2VPipeline:
             ).to(self.device)
 
         return self._audio_encoder, self._audio_processor
+
+    def _get_text_encoder(self):
+        if self._text_encoder is None:
+            self._text_encoder = self.model_ledger.text_encoder()
+        return self._text_encoder
+
+    def _get_video_encoder(self):
+        if self._video_encoder is None:
+            self._video_encoder = self.model_ledger.video_encoder()
+        return self._video_encoder
+
+    def _get_stage_1_transformer(self):
+        if self._stage_1_transformer is None:
+            self._stage_1_transformer = self.model_ledger.transformer()
+        return self._stage_1_transformer
+
+    def _get_stage_2_transformer(self):
+        if self.stage_2_model_ledger is None:
+            raise ValueError("Stage 2 transformer is unavailable without distilled_lora and spatial_upsampler_path")
+        if self._stage_2_transformer is None:
+            self._stage_2_transformer = self.stage_2_model_ledger.transformer()
+        return self._stage_2_transformer
+
+    def _get_stage_2_upsampler(self):
+        if self.stage_2_model_ledger is None:
+            raise ValueError("Stage 2 upsampler is unavailable without distilled_lora and spatial_upsampler_path")
+        if self._stage_2_upsampler is None:
+            self._stage_2_upsampler = self.stage_2_model_ledger.spatial_upsampler()
+        return self._stage_2_upsampler
+
+    def _get_video_decoder(self, use_upscaler: bool):
+        if use_upscaler:
+            if self.stage_2_model_ledger is None:
+                raise ValueError("Stage 2 video decoder is unavailable without distilled_lora and spatial_upsampler_path")
+            if self._stage_2_video_decoder is None:
+                self._stage_2_video_decoder = self.stage_2_model_ledger.video_decoder()
+            return self._stage_2_video_decoder
+        if self._stage_1_video_decoder is None:
+            self._stage_1_video_decoder = self.model_ledger.video_decoder()
+        return self._stage_1_video_decoder
+
+    def _get_audio_decoder(self, use_upscaler: bool):
+        if use_upscaler:
+            if self.stage_2_model_ledger is None:
+                raise ValueError("Stage 2 audio decoder is unavailable without distilled_lora and spatial_upsampler_path")
+            if self._stage_2_audio_decoder is None:
+                self._stage_2_audio_decoder = self.stage_2_model_ledger.audio_decoder()
+            return self._stage_2_audio_decoder
+        if self._stage_1_audio_decoder is None:
+            self._stage_1_audio_decoder = self.model_ledger.audio_decoder()
+        return self._stage_1_audio_decoder
+
+    def _get_vocoder(self, use_upscaler: bool):
+        if use_upscaler:
+            if self.stage_2_model_ledger is None:
+                raise ValueError("Stage 2 vocoder is unavailable without distilled_lora and spatial_upsampler_path")
+            if self._stage_2_vocoder is None:
+                self._stage_2_vocoder = self.stage_2_model_ledger.vocoder()
+            return self._stage_2_vocoder
+        if self._stage_1_vocoder is None:
+            self._stage_1_vocoder = self.model_ledger.vocoder()
+        return self._stage_1_vocoder
 
     def encode_audio(self, waveform: torch.Tensor, sample_rate: int, target_duration: float) -> torch.Tensor:
         audio_encoder, audio_processor = self._get_audio_encoder()
@@ -176,21 +253,16 @@ class AudioConditionedI2VPipeline:
         stepper = EulerDiffusionStep()
 
         audio_latent = self.encode_audio(audio_waveform, audio_sample_rate, duration_s)
-        self._audio_encoder = None
-        self._audio_processor = None
-        cleanup_memory(empty_cache=True, synchronize=True)
 
-        text_encoder = self.model_ledger.text_encoder()
+        text_encoder = self._get_text_encoder()
         context_p, context_n = encode_text(text_encoder, prompts=[prompt, negative_prompt])
         v_context_p, a_context_p = context_p
         v_context_n, a_context_n = context_n
-        del text_encoder
-        cleanup_memory()
 
-        logger.debug("VRAM before transformer build: %.2fGB", torch.cuda.memory_allocated() / 1e9)
-        video_encoder = self.model_ledger.video_encoder()
-        transformer = self.model_ledger.transformer()
-        logger.debug("VRAM after transformer build: %.2fGB", torch.cuda.memory_allocated() / 1e9)
+        _log_vram("VRAM before transformer build: %.2fGB")
+        video_encoder = self._get_video_encoder()
+        transformer = self._get_stage_1_transformer()
+        _log_vram("VRAM after transformer build: %.2fGB")
         sigmas = LTX2Scheduler().execute(steps=num_inference_steps).to(dtype=torch.float32, device=self.device)
 
         if use_upscaler:
@@ -206,9 +278,6 @@ class AudioConditionedI2VPipeline:
             dtype=self.dtype,
             device=self.device,
         )
-
-        if not use_upscaler:
-            cleanup_memory()
 
         video_state, video_tools = noise_video_state(
             output_shape=stage_1_shape,
@@ -226,53 +295,37 @@ class AudioConditionedI2VPipeline:
             generator=generator,
         )
 
-        def stage_1_loop(sigmas, video_state, audio_state, stepper):
-            return euler_denoising_loop(
-                sigmas=sigmas,
-                video_state=video_state,
-                audio_state=audio_state,
-                stepper=stepper,
-                denoise_fn=multi_modal_guider_denoising_func(
-                    video_guider=MultiModalGuider(params=video_guider_params, negative_context=v_context_n),
-                    audio_guider=MultiModalGuider(params=audio_guider_params, negative_context=a_context_n),
-                    v_context=v_context_p,
-                    a_context=a_context_p,
-                    transformer=transformer,
-                ),
-            )
-
-        video_state, audio_state = stage_1_loop(sigmas, video_state, audio_state, stepper)
-
-        # CRITICAL: Break the closure and delete the transformer
-        del stage_1_loop
-        del transformer
-        cleanup_memory(empty_cache=True, synchronize=True)
-        logger.debug("VRAM after transformer purge: %.2fGB", torch.cuda.memory_allocated() / 1e9)
+        video_state, audio_state = euler_denoising_loop(
+            sigmas=sigmas,
+            video_state=video_state,
+            audio_state=audio_state,
+            stepper=stepper,
+            denoise_fn=multi_modal_guider_denoising_func(
+                video_guider=MultiModalGuider(params=video_guider_params, negative_context=v_context_n),
+                audio_guider=MultiModalGuider(params=audio_guider_params, negative_context=a_context_n),
+                v_context=v_context_p,
+                a_context=a_context_p,
+                transformer=transformer,
+            ),
+        )
+        _log_vram("VRAM after stage 1 denoising: %.2fGB")
 
         video_state = video_tools.clear_conditioning(video_state)
         video_state = video_tools.unpatchify(video_state)
         audio_state = audio_tools.clear_conditioning(audio_state)
         audio_state = audio_tools.unpatchify(audio_state)
 
-        torch.cuda.synchronize()
-        cleanup_memory()
-
         if use_upscaler:
-            upsampler = self.stage_2_model_ledger.spatial_upsampler()
+            upsampler = self._get_stage_2_upsampler()
             upscaled_video = upsample_video(
                 latent=video_state.latent[:1],
                 video_encoder=video_encoder,
                 upsampler=upsampler,
             )
-            upsampler = upsampler.to("cpu")
-            del upsampler
-            cleanup_memory(empty_cache=True, synchronize=True)
             stage_1_audio_latent = audio_state.latent
-            torch.cuda.synchronize()
             del video_state, audio_state
-            cleanup_memory(empty_cache=True, synchronize=True)
 
-            transformer = self.stage_2_model_ledger.transformer()
+            transformer = self._get_stage_2_transformer()
             distilled_sigmas = torch.Tensor(STAGE_2_DISTILLED_SIGMA_VALUES).to(self.device)
 
             stage_2_shape = VideoPixelShape(batch=1, frames=num_frames, width=width, height=height, fps=frame_rate)
@@ -284,8 +337,6 @@ class AudioConditionedI2VPipeline:
                 dtype=self.dtype,
                 device=self.device,
             )
-            video_encoder = video_encoder.to("cpu")
-            cleanup_memory(empty_cache=True, synchronize=True)
 
             video_state, video_tools = noise_video_state(
                 output_shape=stage_2_shape,
@@ -305,37 +356,30 @@ class AudioConditionedI2VPipeline:
                 generator=generator,
             )
 
-            def stage_2_loop(sigmas, video_state, audio_state, stepper):
-                return euler_denoising_loop(
-                    sigmas=sigmas,
-                    video_state=video_state,
-                    audio_state=audio_state,
-                    stepper=stepper,
-                    denoise_fn=simple_denoising_func(
-                        video_context=v_context_p,
-                        audio_context=a_context_p,
-                        transformer=transformer,
-                    ),
-                )
-
-            video_state, audio_state = stage_2_loop(distilled_sigmas, video_state, audio_state, stepper)
+            video_state, audio_state = euler_denoising_loop(
+                sigmas=distilled_sigmas,
+                video_state=video_state,
+                audio_state=audio_state,
+                stepper=stepper,
+                denoise_fn=simple_denoising_func(
+                    video_context=v_context_p,
+                    audio_context=a_context_p,
+                    transformer=transformer,
+                ),
+            )
 
             video_state = video_tools.clear_conditioning(video_state)
             video_state = video_tools.unpatchify(video_state)
             audio_state = audio_tools.clear_conditioning(audio_state)
             audio_state = audio_tools.unpatchify(audio_state)
 
-            video_latent_tmp = video_state.latent
-            audio_latent_tmp = audio_state.latent
-            torch.cuda.synchronize()
-            del video_state, audio_state, stage_2_loop, transformer, stage_2_conds, upscaled_video, stage_1_audio_latent
-            cleanup_memory(empty_cache=True, synchronize=True)
-            video_latent = video_latent_tmp
-            audio_latent_out = audio_latent_tmp
+            video_latent = video_state.latent
+            audio_latent_out = audio_state.latent
+            del video_state, audio_state, stage_2_conds, upscaled_video, stage_1_audio_latent
 
         if not use_upscaler:
-            video_latent = video_state.latent.clone()
-            audio_latent_out = audio_state.latent.clone()
+            video_latent = video_state.latent
+            audio_latent_out = audio_state.latent
 
         logger.debug("Final Latent Shapes - Video: %s, Audio: %s", video_latent.shape, audio_latent_out.shape)
         logger.debug(
@@ -346,26 +390,20 @@ class AudioConditionedI2VPipeline:
         )
 
         # Final preparation for decoding
-        torch.cuda.synchronize()
-        if 'video_encoder' in locals():
-            del video_encoder
-        if 'video_state' in locals(): del video_state
-        if 'audio_state' in locals(): del audio_state
+        if not use_upscaler:
+            del video_state, audio_state
         del v_context_p, a_context_p, v_context_n, a_context_n
-        cleanup_memory(empty_cache=True, synchronize=True)
-        logger.debug("VRAM before decoder build: %.2fGB", torch.cuda.memory_allocated() / 1e9)
+        _log_vram("VRAM before decoder fetch: %.2fGB")
 
-        ledger = self.stage_2_model_ledger if use_upscaler else self.model_ledger
+        video_decoder = self._get_video_decoder(use_upscaler=use_upscaler)
+        _log_vram("VRAM after decoder build: %.2fGB")
 
-        video_decoder = ledger.video_decoder()
-        logger.debug("VRAM after decoder build: %.2fGB", torch.cuda.memory_allocated() / 1e9)
-        
         # Realize iterator immediately to prevent it from outliving local references
         decoded_chunks = list(vae_decode_video(video_latent, video_decoder, tiling_config, generator))
         decoded_video = torch.cat(decoded_chunks, dim=0) if len(decoded_chunks) > 1 else decoded_chunks[0]
 
-        audio_decoder = ledger.audio_decoder()
-        vocoder = ledger.vocoder()
+        audio_decoder = self._get_audio_decoder(use_upscaler=use_upscaler)
+        vocoder = self._get_vocoder(use_upscaler=use_upscaler)
         decoded_audio = vae_decode_audio(audio_latent_out, audio_decoder, vocoder)
         logger.debug(
             "Decoded Audio Stats - Max: %.4f, Min: %.4f",
