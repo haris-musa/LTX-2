@@ -52,15 +52,12 @@ class AudioConditionedI2VPipeline:
         distilled_lora: list[LoraPathStrengthAndSDOps] | None = None,
         spatial_upsampler_path: str | None = None,
         device: str = device,
-        fp8transformer: bool = False,
         quantization: QuantizationPolicy | None = None,
     ):
         self.device = device
         self.dtype = torch.bfloat16
         self.checkpoint_path = checkpoint_path
         self.spatial_upsampler_path = spatial_upsampler_path
-        if quantization is None and fp8transformer:
-            quantization = QuantizationPolicy.fp8_cast()
 
         self.model_ledger = ModelLedger(
             dtype=self.dtype,
