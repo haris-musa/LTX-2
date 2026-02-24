@@ -113,14 +113,38 @@ def _fuse_delta_with_scaled_fp8(
     scale_key: str,
     model_sd: StateDict,
 ) -> dict[str, torch.Tensor]:
-    """Dequantize scaled FP8 weight, add LoRA delta, and re-quantize."""
+    """Dequantize scaled FP8 weight, add LoRA delta, and re-quantize.
+
+    Handles two storage layouts:
+    - cuBLAS transposed (in, out): used by fp8_scaled_mm / FP8Linear
+    - standard nn.Linear (out, in): used by fp8_cast
+    The layout is detected by comparing the weight shape against the LoRA delta shape.
+    """
     weight_scale = model_sd.sd[scale_key]
 
-    original_weight = weight.t().to(torch.float32) * weight_scale
+    # Detect layout: if weight shape matches deltas, it's standard (out, in);
+    # if transposed shape matches, it's cuBLAS (in, out).
+    needs_transpose = weight.shape != deltas.shape
+    if needs_transpose:
+        original_weight = weight.t().to(torch.float32) * weight_scale
+    else:
+        original_weight = weight.to(torch.float32) * weight_scale
 
     new_weight = original_weight + deltas.to(torch.float32)
 
-    new_fp8_weight, new_weight_scale = quantize_weight_to_fp8_per_tensor(new_weight)
+    if needs_transpose:
+        # Re-quantize with transpose (cuBLAS layout -> quantize_weight transposes back)
+        new_fp8_weight, new_weight_scale = quantize_weight_to_fp8_per_tensor(new_weight)
+    else:
+        # Re-quantize without transpose for standard nn.Linear layout
+        weight_fp32 = new_weight.to(torch.float32)
+        fp8_max = torch.finfo(torch.float8_e4m3fn).max
+        max_abs = torch.amax(torch.abs(weight_fp32))
+        scale = fp8_max / max_abs
+        fp8_min = torch.finfo(torch.float8_e4m3fn).min
+        new_fp8_weight = torch.clamp(weight_fp32 * scale, min=fp8_min, max=fp8_max).to(torch.float8_e4m3fn)
+        new_weight_scale = scale.reciprocal()
+
     return {key: new_fp8_weight, scale_key: new_weight_scale}
 
 
