@@ -79,13 +79,9 @@ def _fuse_deltas(
         fused = _copy_weight_without_lora(weight, key, target_dtype, device, is_scaled_fp8, scale_key, model_sd)
     elif weight.dtype == torch.float8_e4m3fn:
         if is_scaled_fp8 and deltas.shape != weight.shape:
-            # cuBLAS transposed layout (in, out) used by fp8_scaled_mm / FP8Linear.
-            # Dequantize with weight_scale, fuse, and re-quantize.
+            # Transposed layout (fp8_scaled_mm) — dequantize with weight_scale, fuse, re-quantize
             fused = _fuse_delta_with_scaled_fp8(deltas, weight, key, scale_key, model_sd)
         else:
-            # Standard nn.Linear layout (out, in) used by fp8_cast.
-            # weight_scale exists in the state dict but is NOT used during inference
-            # (UPCAST_DURING_INFERENCE just does .to(dtype)), so fuse with naive cast.
             fused = _fuse_delta_with_cast_fp8(deltas, weight, key, target_dtype, device)
     elif weight.dtype == torch.bfloat16:
         fused = _fuse_delta_with_bfloat16(deltas, weight, key, target_dtype)
